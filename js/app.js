@@ -9,6 +9,7 @@ import { AdminPage } from './screens/admin.js';
 import { OrgPage } from './screens/org.js';
 import { GroupPage, MatchPage } from './screens/matches.js';
 import { Bell, InvitesPage, MyMatchesPage } from './screens/notify.js';
+import { TelaoPage } from './screens/telao.js';
 
 function App({ api }) {
   const [me, setMe] = useState(undefined); // undefined = carregando; null = sem conta
@@ -23,9 +24,11 @@ function App({ api }) {
   useEffect(() => { refreshMe(); const sub = api.onAuth(() => refreshMe()); return () => sub?.data?.subscription?.unsubscribe?.(); }, []);
 
   const ctx = { api, me, refreshMe };
+  const [r0, r1, r2] = route;
+  // Telão: público, sem login e sem o menu do app.
+  if (r0 === 'telao' && r1) return html`<${TelaoPage} api=${api} token=${r1} />`;
   if (me === undefined) return html`<div class="auth-wrap"><p class="muted">Carregando…</p></div>`;
 
-  const [r0, r1, r2] = route;
   let page;
   if (!me) page = html`<${LoginPage} />`;
   else if (!me.complete && r0 !== 'sair') page = html`<${ProfilePage} complete=${true} />`;

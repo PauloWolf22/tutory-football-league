@@ -45,6 +45,7 @@ try {
   Passo 'Marcando o banco como ambiente de testes' { & $cli db query --db-url $url -f 'supabase/tests/00_marcar_ambiente_dev.sql' }
   Passo 'Rodando os testes da Fase 1 (permissões)' { & $cli db query --db-url $url -f 'supabase/tests/fase1_permissoes.sql' }
   Passo 'Rodando os testes da Fase 2 (operação)' { & $cli db query --db-url $url -f 'supabase/tests/fase2_operacao.sql' }
+  Passo 'Rodando os testes da Fase 3a (sorteio e telão)' { & $cli db query --db-url $url -f 'supabase/tests/fase3a_sorteio.sql' }
   Passo 'Resultado dos testes' { & $cli db query --db-url $url --output-format json "select n, ok, teste, detalhe from private.test_results order by n" }
   Write-Host ''
   Write-Host "Pronto. Resultado salvo em $log" -ForegroundColor Green
@@ -54,6 +55,7 @@ try {
 } finally {
   $url = $null
 }
+
 
 
 

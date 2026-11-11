@@ -1,6 +1,7 @@
 // Grupos (convite pelo organizador) e jogos (marcar, presença por ordem de confirmação, lista de espera ao vivo).
 import { html, useState, useApp, useLoad, Loading, ErrorBox, Dialog, useConfirm, act, go, href, Ava, money, fmtDay, fmtTime, fmtWhen,
   localToIso, todayStr, BOOKING_LABEL, BOOKING_CLASS, RSVP_LABEL, RSVP_CLASS, useLive, toast } from '../ui.js';
+import { RotationPanel } from './rotation.js';
 
 // ---------------------------------------------------------------- Grupos (aba da empresa)
 export function GroupsTab({ slug }) {
@@ -269,6 +270,8 @@ export function MatchPage({ id }) {
       ${m.me !== 'confirmed' && m.me !== 'waitlist' && m.me !== 'removed' && html`<button class="btn primary" aria-busy=${busy ? 'true' : 'false'} onClick=${() => rsvp(true)} style="min-height:52px;padding:0 26px">Vou!</button>`}
       ${m.me !== 'declined' && m.me !== 'removed' && html`<button class="btn" aria-busy=${busy ? 'true' : 'false'} onClick=${() => rsvp(false)} style="min-height:52px">${m.me === 'invited' ? 'Não vou' : 'Desistir'}</button>`}
     </div>`}
+
+    ${m.status !== 'cancelled' && html`<${RotationPanel} match=${m} people=${m.people} onChange=${q.reload} />`}
 
     ${sec('Confirmados', by('confirmed'), 'num')}
     ${sec('Lista de espera', by('waitlist'), 'wait')}

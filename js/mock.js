@@ -605,6 +605,119 @@ Object.assign(rpcs, {
   },
 });
 
+// ---------------------------------------------------------------- Fase 3a (espelho de 20261113090000_fase3a_sorteio_telao.sql)
+const t3 = () => { for (const k of ['levels', 'draws', 'rotations', 'rounds', 'displays']) db[k] ||= []; };
+const matchById = (id) => db.matches.find((m) => m.id === id);
+const canRun = (m) => !!m && (can(m.org_id, 'draw.run', 'group', m.group_id) || can(m.org_id, 'match.manage', 'group', m.group_id));
+const confirmedOrder = (mid) => db.participants.filter((p) => p.match_id === mid && p.status === 'confirmed').sort((a, b) => a.responded_at.localeCompare(b.responded_at) || a.user_id.localeCompare(b.user_id)).map((p) => p.user_id);
+const levelOf = (orgId, u) => db.levels.find((l) => l.org_id === orgId && l.user_id === u)?.level ?? null;
+const levelSum = (orgId, us) => us.reduce((s, u) => s + (levelOf(orgId, u) ?? 3), 0);
+const prof = (u) => db.profiles[u] || {};
+const firstName = (u) => ((prof(u).nick || prof(u).display_name || '').split(' ')[0]);
+function rotationSync(mid) {
+  const r = db.rotations.find((x) => x.match_id === mid); if (!r) return;
+  const conf = confirmedOrder(mid); const keep = (arr) => arr.filter((u) => conf.includes(u));
+  let a = keep(r.team_a), b = keep(r.team_b), q = keep(r.queue);
+  conf.forEach((u) => { if (![...a, ...b, ...q].includes(u)) q.push(u); });
+  while (a.length < r.team_size && q.length) a.push(q.shift());
+  while (b.length < r.team_size && q.length) b.push(q.shift());
+  if (JSON.stringify([a, b, q]) !== JSON.stringify([r.team_a, r.team_b, r.queue])) Object.assign(r, { team_a: a, team_b: b, queue: q, version: r.version + 1 });
+}
+Object.assign(rpcs, {
+  tfl_levels_get({ p_match }) {
+    t3(); const m = matchById(p_match); if (!canRun(m)) return E('Só quem organiza vê as notas.');
+    return { levels: db.group_members.filter((x) => x.group_id === m.group_id && x.status === 'active')
+      .map((x) => ({ user_id: x.user_id, name: prof(x.user_id).nick || prof(x.user_id).display_name, photo_path: prof(x.user_id).photo_path, level: levelOf(m.org_id, x.user_id) }))
+      .sort((a, b) => a.name.localeCompare(b.name)) };
+  },
+  tfl_level_set({ p_match, p_user, p_level }) {
+    t3(); const m = matchById(p_match); if (!canRun(m)) return E('Só quem organiza dá notas.');
+    if (p_level != null && !(p_level >= 1 && p_level <= 5)) return E('Nota de 1 a 5.');
+    db.levels = db.levels.filter((l) => !(l.org_id === m.org_id && l.user_id === p_user));
+    if (p_level != null) db.levels.push({ org_id: m.org_id, user_id: p_user, level: p_level }); return { ok: true };
+  },
+  tfl_draw_save({ p_match, p_mode, p_team_a, p_team_b, p_seed }) {
+    t3(); const m = matchById(p_match); if (!canRun(m)) return E('Você não pode sortear este jogo.');
+    if (m.status === 'cancelled') return E('Este jogo foi cancelado.');
+    const n = p_team_a.length; if (n < 2 || n > 11 || n !== p_team_b.length) return E('Os dois times precisam ter o mesmo tamanho (de 2 a 11).');
+    const conf = confirmedOrder(m.id); if (conf.length < 2 * n) return E(`São precisos ${2 * n} confirmados para dois times de ${n}. Agora são ${conf.length}.`);
+    const first = conf.slice(0, 2 * n), all = [...p_team_a, ...p_team_b];
+    if (new Set(all).size !== 2 * n || all.some((u) => !first.includes(u))) return E('Os times precisam ser formados pelos primeiros confirmados, sem repetir ninguém.');
+    const a = levelSum(m.org_id, p_team_a), b = levelSum(m.org_id, p_team_b); const balance = { a, b, pct_a: Math.round((100 * a) / Math.max(a + b, 1)) };
+    const d = { id: uuid(), match_id: m.id, mode: p_mode, team_size: n, team_a: p_team_a, team_b: p_team_b, queue: conf.slice(2 * n), seed: p_seed, balance, created_at: now() };
+    db.draws.push(d);
+    let r = db.rotations.find((x) => x.match_id === m.id);
+    if (!r) { r = { match_id: m.id, round_no: 1, version: 0 }; db.rotations.push(r); }
+    Object.assign(r, { draw_id: d.id, team_size: n, team_a: [...p_team_a], team_b: [...p_team_b], queue: [...d.queue], streak_a: 0, streak_b: 0, version: r.version + 1 });
+    log(m.org_id, 'draw.save', null, { match: m.id, mode: p_mode }); return { ok: true, draw_id: d.id, balance };
+  },
+  tfl_rotation_sync({ p_match }) { t3(); const m = matchById(p_match); if (!canRun(m)) return E('Você não conduz este jogo.'); rotationSync(m.id); return { ok: true }; },
+  tfl_round_finish({ p_match, p_winner, p_score_a = null, p_score_b = null }) {
+    t3(); const m = matchById(p_match); if (!canRun(m)) return E('Você não conduz este jogo.');
+    if (!['A', 'B', 'draw'].includes(p_winner)) return E('Informe quem venceu (A, B ou empate).');
+    rotationSync(m.id); const r = db.rotations.find((x) => x.match_id === m.id); if (!r) return E('Faça o sorteio antes de registrar rodadas.');
+    if (!r.team_a.length || !r.team_b.length) return E('Um dos times está vazio. Confirme mais jogadores.');
+    const n = r.team_size; let q = [...r.queue], a = [...r.team_a], b = [...r.team_b], sa = r.streak_a + 1, sb = r.streak_b + 1, leaving, entering;
+    if (p_winner === 'draw' && q.length >= 2 * n) { leaving = [...a, ...b]; q = [...q, ...a, ...b]; a = q.slice(0, n); b = q.slice(n, 2 * n); q = q.slice(2 * n); entering = [...a, ...b]; sa = 0; sb = 0; }
+    else {
+      const leave = p_winner === 'A' ? 'B' : p_winner === 'B' ? 'A' : sb > sa ? 'B' : 'A';
+      if (leave === 'A') { leaving = a; q = [...q, ...a]; a = q.slice(0, n); q = q.slice(n); entering = a; sa = 0; }
+      else { leaving = b; q = [...q, ...b]; b = q.slice(0, n); q = q.slice(n); entering = b; sb = 0; }
+    }
+    db.rounds.push({ id: uuid(), match_id: m.id, round_no: r.round_no, team_a: r.team_a, team_b: r.team_b, winner: p_winner, score_a: p_score_a, score_b: p_score_b, leaving, entering, created_at: now() });
+    Object.assign(r, { team_a: a, team_b: b, queue: q, streak_a: sa, streak_b: sb, round_no: r.round_no + 1, version: r.version + 1 });
+    return { ok: true, round: r.round_no - 1, leaving, entering };
+  },
+  tfl_round_undo({ p_match }) {
+    t3(); const m = matchById(p_match); if (!canRun(m)) return E('Você não conduz este jogo.');
+    const rd = db.rounds.filter((x) => x.match_id === m.id).sort((x, y) => y.round_no - x.round_no)[0]; if (!rd) return E('Nenhuma rodada para desfazer.');
+    const r = db.rotations.find((x) => x.match_id === m.id);
+    const q = [...rd.entering.filter((u) => !rd.leaving.includes(u)), ...r.queue.filter((u) => !rd.leaving.includes(u))];
+    Object.assign(r, { team_a: rd.team_a, team_b: rd.team_b, queue: q, round_no: rd.round_no, streak_a: Math.max(r.streak_a - 1, 0), streak_b: Math.max(r.streak_b - 1, 0), version: r.version + 1 });
+    db.rounds = db.rounds.filter((x) => x.id !== rd.id); return { ok: true };
+  },
+  tfl_rotation_swap({ p_match, p_user1, p_user2 }) {
+    t3(); const m = matchById(p_match); if (!canRun(m)) return E('Você não conduz este jogo.');
+    const r = db.rotations.find((x) => x.match_id === m.id); if (!r) return E('Faça o sorteio antes.');
+    const all = [...r.team_a, ...r.team_b, ...r.queue]; const i = all.indexOf(p_user1), j = all.indexOf(p_user2);
+    if (i < 0 || j < 0) return E('Os dois precisam estar no rodízio.');
+    [all[i], all[j]] = [all[j], all[i]]; const na = r.team_a.length, nb = r.team_b.length;
+    Object.assign(r, { team_a: all.slice(0, na), team_b: all.slice(na, na + nb), queue: all.slice(na + nb), version: r.version + 1 }); return { ok: true };
+  },
+  tfl_rotation_get({ p_match }) {
+    t3(); const m = matchById(p_match); if (!m || !canSeeMatch(m)) return E('Sem acesso a este jogo.');
+    const run = canRun(m); const r = db.rotations.find((x) => x.match_id === m.id); const conf = confirmedOrder(m.id).length;
+    if (!r) return { exists: false, can_run: run, confirmed: conf };
+    const d = db.draws.find((x) => x.id === r.draw_id);
+    const P = (u) => ({ user_id: u, name: prof(u).nick || prof(u).display_name, photo_path: prof(u).photo_path, level: run ? levelOf(m.org_id, u) : null });
+    return { exists: true, can_run: run, team_size: r.team_size, round_no: r.round_no, version: r.version, confirmed: conf,
+      draw: { id: d?.id, mode: d?.mode, created_at: d?.created_at, balance: run ? d?.balance : null },
+      teams: { A: r.team_a.map(P), B: r.team_b.map(P) }, queue: r.queue.map((u) => ({ user_id: u, name: prof(u).nick || prof(u).display_name, photo_path: prof(u).photo_path })),
+      streak: { A: r.streak_a, B: r.streak_b },
+      rounds: db.rounds.filter((x) => x.match_id === m.id).sort((x, y) => y.round_no - x.round_no).map((x) => ({ round_no: x.round_no, winner: x.winner, score_a: x.score_a, score_b: x.score_b, at: x.created_at })) };
+  },
+  tfl_display_open({ p_match, p_photos = {}, p_hours = 12 }) {
+    t3(); const m = matchById(p_match); if (!canRun(m)) return E('Você não pode abrir o telão deste jogo.');
+    const photos = {};
+    for (const [u, url] of Object.entries(p_photos || {})) { const p = prof(u); if (p.show_on_screen && !isMinor(p.birth_date) && p.photo_path && db.participants.some((x) => x.match_id === m.id && x.user_id === u)) photos[u] = url; }
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(18)), (x) => x.toString(16).padStart(2, '0')).join('');
+    db.displays.push({ token, match_id: m.id, photos, expires_at: new Date(Date.now() + p_hours * 3600e3).toISOString(), revoked_at: null });
+    return { ok: true, token, expires_at: db.displays.at(-1).expires_at };
+  },
+  tfl_display_state({ p_token }) {
+    t3(); const s = db.displays.find((x) => x.token === p_token);
+    if (!s || s.revoked_at || new Date(s.expires_at) < new Date()) return E('Este link de telão expirou ou foi encerrado.');
+    const m = matchById(s.match_id); const r = db.rotations.find((x) => x.match_id === m.id); const d = r && db.draws.find((x) => x.id === r.draw_id);
+    const lr = db.rounds.filter((x) => x.match_id === m.id).sort((x, y) => y.round_no - x.round_no)[0];
+    const T = (u) => ({ name: firstName(u), photo: s.photos[u] || null });
+    return { org: orgById(m.org_id).name, group: groupById(m.group_id).name, starts_at: m.starts_at, status: m.status, place: venueById(m.venue_id)?.name || m.location_text,
+      confirmed: confirmedOrder(m.id).length,
+      rotation: r ? { version: r.version, round_no: r.round_no, team_size: r.team_size, draw_id: r.draw_id, draw_mode: d?.mode, draw_at: d?.created_at,
+        A: r.team_a.map(T), B: r.team_b.map(T), queue: r.queue.map(firstName), last: lr ? { round_no: lr.round_no, winner: lr.winner, score_a: lr.score_a, score_b: lr.score_b } : null } : null };
+  },
+  tfl_display_close({ p_match }) { t3(); const m = matchById(p_match); if (!canRun(m)) return E('Você não conduz este jogo.'); db.displays.filter((x) => x.match_id === m.id).forEach((x) => { x.revoked_at = now(); }); return { ok: true }; },
+});
+
 // Tempo real simulado: avisa as telas inscritas depois de cada mudança (nesta aba e nas outras).
 const rtListeners = new Set();
 const fireRealtime = () => rtListeners.forEach((fn) => { try { fn(); } catch {} });
@@ -636,7 +749,7 @@ export function createMockClient() {
     },
     async rpc(name, args) {
       const fn = rpcs[name]; if (!fn) return { data: null, error: { message: `função ${name} não existe no simulador` } };
-      try { const data = fn(args || {}); save(); if (!/^tfl_(.*_list|.*_get|my_|notifications$|venues_list|roles_list|pa_|org_overview|org_members|org_audit)/.test(name)) setTimeout(fireRealtime, 120); return delay({ data, error: null }); }
+      try { const data = fn(args || {}); save(); if (!/^tfl_(.*_list|.*_get|my_|notifications$|venues_list|roles_list|pa_|org_overview|org_members|org_audit|display_state|levels_get)/.test(name)) setTimeout(fireRealtime, 120); return delay({ data, error: null }); }
       catch (e) { if (e instanceof Refused) return delay({ data: null, error: { message: e.message } }); throw e; }
     },
     // Mesmo formato do Supabase Realtime: channel().on('postgres_changes', ...).subscribe()
