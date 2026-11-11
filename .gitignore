@@ -1,0 +1,6 @@
+# Arquivos locais da CLI do Supabase e registros de execução (podem ter detalhes do ambiente)
+supabase/.temp/
+supabase/.branches/
+supabase/ultimo-resultado-*.txt
+# Cópias de segurança do Blender
+*.blend1
